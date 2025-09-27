@@ -1,0 +1,6 @@
+LIBRARY WinShellPreview
+EXPORTS
+    GetFileThumbnail
+    GetFilePreview
+    SaveBitmapToFile
+    ReleasePreviewBitmap
