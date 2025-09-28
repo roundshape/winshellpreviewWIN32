@@ -55,13 +55,51 @@ int main(int argc, char* argv[])
 
     if (FAILED(hr))
     {
-        std::cout << "GetFileThumbnail failed (0x" << std::hex << hr << std::dec << "), trying alternative preview method..." << std::endl;
+        std::cout << "GetFileThumbnail failed (0x" << std::hex << hr << std::dec << ")" << std::endl;
+        
+        // Try to provide more specific error information
+        switch (hr)
+        {
+        case 0x8004b200:
+            std::cout << "  -> WTS_E_EXTRACTNOTSUPPORTED: Preview handler doesn't support this operation" << std::endl;
+            break;
+        case 0x80070002:
+            std::cout << "  -> ERROR_FILE_NOT_FOUND: File not found" << std::endl;
+            break;
+        case 0x80070005:
+            std::cout << "  -> ERROR_ACCESS_DENIED: Access denied" << std::endl;
+            break;
+        case 0x80070057:
+            std::cout << "  -> E_INVALIDARG: Invalid argument" << std::endl;
+            break;
+        case 0x80004005:
+            std::cout << "  -> E_FAIL: Unspecified failure" << std::endl;
+            break;
+        case 0x80040154:
+            std::cout << "  -> REGDB_E_CLASSNOTREG: Class not registered" << std::endl;
+            break;
+        case 0x800401F0:
+            std::cout << "  -> CO_E_NOTINITIALIZED: COM not initialized" << std::endl;
+            break;
+        default:
+            std::cout << "  -> Unknown error code" << std::endl;
+            break;
+        }
+        
+        std::cout << "Trying alternative preview method..." << std::endl;
         hr = GetFilePreview(wInputFile.c_str(), size, size, &hBitmap);
+        
+        if (FAILED(hr))
+        {
+            std::cout << "GetFilePreview also failed (0x" << std::hex << hr << std::dec << ")" << std::endl;
+        }
     }
     else
     {
         std::cout << "GetFileThumbnail succeeded!" << std::endl;
     }
+
+    std::cout << "Final result: hr=0x" << std::hex << hr << std::dec << ", hBitmap=" << (hBitmap ? "valid" : "null") << std::endl;
 
     if (SUCCEEDED(hr) && hBitmap)
     {
