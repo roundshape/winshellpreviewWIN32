@@ -539,8 +539,51 @@ HRESULT PreviewHandler::GetPreviewInSTAThread(LPCWSTR pszFilePath, UINT cx, UINT
                 
                 if (SUCCEEDED(hr))
                 {
-                    // Message pump and capture (simplified for now)
-                    Sleep(2000); // Simple wait for now
+                    // Message pump and wait for child window creation
+                    MSG msg;
+                    DWORD startTime = GetTickCount();
+                    DWORD timeout = 3000; // 3 seconds timeout
+                    HWND hwndChild = nullptr;
+                    
+                    sprintf_s(debugMsg, "IPreviewHandler: Waiting for child window creation...\n");
+                    OutputDebugStringA(debugMsg);
+                    printf("%s", debugMsg);
+                    
+                    // Wait for child window to be created by preview handler
+                    while ((GetTickCount() - startTime) < timeout)
+                    {
+                        // Process messages
+                        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE))
+                        {
+                            TranslateMessage(&msg);
+                            DispatchMessage(&msg);
+                        }
+                        
+                        // Try to get child window from IOleWindow
+                        IOleWindow* pOleWindow = nullptr;
+                        if (SUCCEEDED(pPreviewHandler->QueryInterface(IID_PPV_ARGS(&pOleWindow))))
+                        {
+                            pOleWindow->GetWindow(&hwndChild);
+                            pOleWindow->Release();
+                            
+                            if (hwndChild && hwndChild != hwndParent)
+                            {
+                                sprintf_s(debugMsg, "IPreviewHandler: Child window found: 0x%p\n", hwndChild);
+                                OutputDebugStringA(debugMsg);
+                                printf("%s", debugMsg);
+                                break;
+                            }
+                        }
+                        
+                        Sleep(50); // Small delay
+                    }
+                    
+                    // Use child window if found, otherwise use parent
+                    HWND hwndCapture = hwndChild ? hwndChild : hwndParent;
+                    
+                    sprintf_s(debugMsg, "IPreviewHandler: Capturing from window 0x%p\n", hwndCapture);
+                    OutputDebugStringA(debugMsg);
+                    printf("%s", debugMsg);
                     
                     // Create bitmap for capture
                     HDC hdcScreen = GetDC(nullptr);
@@ -550,7 +593,21 @@ HRESULT PreviewHandler::GetPreviewInSTAThread(LPCWSTR pszFilePath, UINT cx, UINT
                     if (hBitmap)
                     {
                         HBITMAP hOldBitmap = (HBITMAP)SelectObject(hdcMem, hBitmap);
-                        PrintWindow(hwndParent, hdcMem, PW_RENDERFULLCONTENT);
+                        
+                        // Fill with white background first
+                        RECT fillRect = {0, 0, (LONG)cx, (LONG)cy};
+                        HBRUSH whiteBrush = CreateSolidBrush(RGB(255, 255, 255));
+                        FillRect(hdcMem, &fillRect, whiteBrush);
+                        DeleteObject(whiteBrush);
+                        
+                        // Capture from the appropriate window
+                        BOOL printResult = PrintWindow(hwndCapture, hdcMem, PW_RENDERFULLCONTENT);
+                        
+                        sprintf_s(debugMsg, "IPreviewHandler: PrintWindow returned %s\n", 
+                                 printResult ? "SUCCESS" : "FAILED");
+                        OutputDebugStringA(debugMsg);
+                        printf("%s", debugMsg);
+                        
                         SelectObject(hdcMem, hOldBitmap);
                         *phbmp = hBitmap;
                         hr = S_OK;
@@ -562,6 +619,9 @@ HRESULT PreviewHandler::GetPreviewInSTAThread(LPCWSTR pszFilePath, UINT cx, UINT
             }
         }
     }
+    
+    // Proper cleanup: Unload before Release
+    pPreviewHandler->Unload();
     
     DestroyWindow(hwndParent);
     pPreviewHandler->Release();
@@ -632,7 +692,7 @@ HRESULT PreviewHandler::GetPreviewHandlerFromExtension(LPCWSTR pszFilePath, IPre
     DWORD dwSize = MAX_PATH;
     
     HRESULT hr = AssocQueryStringW(
-        ASSOCF_NONE,
+        ASSOCF_INIT_DEFAULTTOSTAR,
         ASSOCSTR_SHELLEXTENSION,
         pszExt,
         L"{8895b1c6-b41f-4c1c-a562-0d564250836f}", // BHID_PreviewHandler
