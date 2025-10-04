@@ -4,6 +4,10 @@ set(SOURCES
     pch.cpp
     PreviewHandler.cpp
     WinShellPreview.cpp
+    Thumbnail.cpp
+    Preview.cpp
+    Icon.cpp
+    BitmapUtils.cpp
 )
 
 set(HEADERS
@@ -11,6 +15,10 @@ set(HEADERS
     pch.h
     PreviewHandler.h
     WinShellPreview.h
+    ThumbnailImpl.h
+    PreviewImpl.h
+    IconImpl.h
+    BitmapUtils.h
 )
 
 # DLLを作成
@@ -24,6 +32,11 @@ target_compile_definitions(WinShellPreview PRIVATE
     WINSHELLPREVIEW_EXPORTS
     _WINDOWS
     _USRDLL
+)
+
+# UTF-8サポートを追加して警告を抑制
+target_compile_options(WinShellPreview PRIVATE
+    /utf-8
 )
 
 # 必要なライブラリをリンク

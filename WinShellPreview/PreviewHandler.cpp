@@ -29,60 +29,130 @@ HRESULT PreviewHandler::GetThumbnail(LPCWSTR pszFilePath, UINT cx, HBITMAP* phbm
     if (!pszFilePath || !phbmp)
         return E_INVALIDARG;
 
-    // Try IPreviewHandler first (for actual file content preview)
-    HRESULT hr = GetPreviewUsingIPreviewHandler(pszFilePath, cx, cx, phbmp);
+    *phbmp = nullptr;
+    
+    char debugMsg[256];
+    IThumbnailCache* pThumbCache;
+    IShellItem* pShellItem;
+    HRESULT hr;
+    
+    // 1. (最優先) IThumbnailCache を使う - Shell のサムネイル共有キャッシュを正しく使う
+    pThumbCache = nullptr;
+    hr = CoCreateInstance(CLSID_LocalThumbnailCache, nullptr, CLSCTX_INPROC_SERVER, IID_IThumbnailCache, reinterpret_cast<void**>(&pThumbCache));
+    
+    sprintf_s(debugMsg, "GetThumbnail: IThumbnailCache CoCreateInstance returned 0x%08x\n", hr);
+    OutputDebugStringA(debugMsg);
+    
     if (SUCCEEDED(hr))
     {
-        if (pdwAlpha) *pdwAlpha = WTSAT_UNKNOWN;
-        return hr;
+        pShellItem = nullptr;
+        hr = SHCreateItemFromParsingName(pszFilePath, nullptr, IID_IShellItem, reinterpret_cast<void**>(&pShellItem));
+        
+        sprintf_s(debugMsg, "GetThumbnail: SHCreateItemFromParsingName returned 0x%08x\n", hr);
+        OutputDebugStringA(debugMsg);
+        
+        if (SUCCEEDED(hr))
+        {
+            ISharedBitmap* pSharedBitmap = nullptr;
+            WTS_CACHEFLAGS cacheFlags;
+            WTS_THUMBNAILID thumbId;
+            
+            // まず WTS_INCACHEONLY でキャッシュ命中を確認
+            hr = pThumbCache->GetThumbnail(pShellItem, cx, WTS_INCACHEONLY, &pSharedBitmap, &cacheFlags, &thumbId);
+            
+            sprintf_s(debugMsg, "GetThumbnail: IThumbnailCache WTS_INCACHEONLY returned 0x%08x\n", hr);
+            OutputDebugStringA(debugMsg);
+            
+            // キャッシュミスの場合は WTS_EXTRACT で取得
+            if (FAILED(hr))
+            {
+                sprintf_s(debugMsg, "GetThumbnail: Cache miss, trying WTS_EXTRACT\n");
+                OutputDebugStringA(debugMsg);
+                
+                hr = pThumbCache->GetThumbnail(pShellItem, cx, WTS_EXTRACT, &pSharedBitmap, &cacheFlags, &thumbId);
+                
+                sprintf_s(debugMsg, "GetThumbnail: IThumbnailCache WTS_EXTRACT returned 0x%08x\n", hr);
+                OutputDebugStringA(debugMsg);
+            }
+            
+            if (SUCCEEDED(hr) && pSharedBitmap)
+            {
+                HBITMAP hSharedBmp = nullptr;
+                hr = pSharedBitmap->GetSharedBitmap(&hSharedBmp);
+                
+                if (SUCCEEDED(hr) && hSharedBmp)
+                {
+                    // Convert shared bitmap to a regular bitmap
+                    HDC hdcScreen = GetDC(nullptr);
+                    HDC hdcSrc = CreateCompatibleDC(hdcScreen);
+                    HDC hdcDst = CreateCompatibleDC(hdcScreen);
+                    
+                    HBITMAP hRegularBmp = CreateCompatibleBitmap(hdcScreen, cx, cx);
+                    
+                    if (hRegularBmp)
+                    {
+                        HBITMAP oldSrc = (HBITMAP)SelectObject(hdcSrc, hSharedBmp);
+                        HBITMAP oldDst = (HBITMAP)SelectObject(hdcDst, hRegularBmp);
+                        
+                        // Fill with white background
+                        RECT rect = {0, 0, (LONG)cx, (LONG)cx};
+                        HBRUSH whiteBrush = CreateSolidBrush(RGB(255, 255, 255));
+                        FillRect(hdcDst, &rect, whiteBrush);
+                        DeleteObject(whiteBrush);
+                        
+                        // Copy the shared bitmap content
+                        BitBlt(hdcDst, 0, 0, cx, cx, hdcSrc, 0, 0, SRCCOPY);
+                        
+                        SelectObject(hdcSrc, oldSrc);
+                        SelectObject(hdcDst, oldDst);
+                        
+                        *phbmp = hRegularBmp;
+                        if (pdwAlpha) *pdwAlpha = WTSAT_UNKNOWN;
+                        hr = S_OK;
+                        
+                        sprintf_s(debugMsg, "GetThumbnail: IThumbnailCache success\n");
+                        OutputDebugStringA(debugMsg);
+                    }
+                    else
+                    {
+                        hr = E_FAIL;
+                    }
+                    
+                    DeleteDC(hdcSrc);
+                    DeleteDC(hdcDst);
+                    ReleaseDC(nullptr, hdcScreen);
+                }
+                
+                pSharedBitmap->Release();
+            }
+            
+            pShellItem->Release();
+        }
+        
+        pThumbCache->Release();
+        
+        // IThumbnailCache が成功したら終了
+        if (SUCCEEDED(hr))
+            return hr;
     }
     
-    printf("IPreviewHandler failed, trying IShellItemImageFactory...\n");
-
-    // Try IShellItemImageFactory second (recommended modern approach for thumbnails)
+    sprintf_s(debugMsg, "GetThumbnail: IThumbnailCache failed, trying IShellItemImageFactory\n");
+    OutputDebugStringA(debugMsg);
+    
+    // 2. (簡易ルート) IShellItemImageFactory::GetImage を使う
+    // Shell が内部でキャッシュ利用＆必要なら抽出してくれる
     hr = GetImageUsingIShellItemImageFactory(pszFilePath, cx, phbmp);
     if (SUCCEEDED(hr))
     {
         if (pdwAlpha) *pdwAlpha = WTSAT_UNKNOWN;
+        sprintf_s(debugMsg, "GetThumbnail: IShellItemImageFactory success\n");
+        OutputDebugStringA(debugMsg);
         return hr;
     }
     
-    printf("IShellItemImageFactory failed, trying fallback methods...\n");
-
-    // Try thumbnail cache second (often works when Explorer preview works)
-    hr = GetThumbnailUsingIThumbnailCache(pszFilePath, cx, phbmp);
-    if (SUCCEEDED(hr))
-    {
-        if (pdwAlpha) *pdwAlpha = WTSAT_UNKNOWN;
-        return hr;
-    }
+    sprintf_s(debugMsg, "GetThumbnail: All methods failed, returning 0x%08x\n", hr);
+    OutputDebugStringA(debugMsg);
     
-    // Debug: IThumbnailCache failed
-    OutputDebugStringA("IThumbnailCache failed\n");
-
-    // Try IThumbnailProvider third (most reliable for modern file types)
-    hr = GetThumbnailUsingIThumbnailProvider(pszFilePath, cx, phbmp, pdwAlpha);
-    if (SUCCEEDED(hr))
-    {
-        return hr;
-    }
-    
-    // Debug: IThumbnailProvider failed
-    OutputDebugStringA("IThumbnailProvider failed\n");
-
-    // Try IExtractImage last (classic method, works well with shell extensions)
-    hr = GetThumbnailUsingIExtractImage(pszFilePath, cx, cx, phbmp);
-    if (SUCCEEDED(hr) && pdwAlpha)
-    {
-        *pdwAlpha = WTSAT_UNKNOWN;
-    }
-    
-    // Debug: IExtractImage result
-    if (FAILED(hr))
-    {
-        OutputDebugStringA("IExtractImage also failed\n");
-    }
-
     return hr;
 }
 
@@ -91,7 +161,10 @@ HRESULT PreviewHandler::GetPreviewBitmap(LPCWSTR pszFilePath, UINT cx, UINT cy, 
     if (!pszFilePath || !phbmp)
         return E_INVALIDARG;
 
-    return ExtractImage(pszFilePath, cx, cy, phbmp);
+    *phbmp = nullptr;
+    
+    // Only use preview handlers - no fallback to thumbnails
+    return GetPreviewUsingIPreviewHandler(pszFilePath, cx, cy, phbmp);
 }
 
 HRESULT PreviewHandler::ExtractImage(LPCWSTR pszFilePath, UINT cx, UINT cy, HBITMAP* phbmp)
