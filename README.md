@@ -10,13 +10,14 @@ Windows Shell APIを使用してファイルのプレビュー/サムネイル�
 
 ## 🚀 機能
 
-- **Windows Shell API統合**: Windows Explorerと同じプレビューハンドラーを使用
-- **多様なファイル形式対応**: PDF、Office文書（Word、Excel、PowerPoint）、画像、動画など
-- **高品質サムネイル**: システム標準の高品質プレビューを生成
-- **複数の取得方法**: フォールバック機能により確実な画像取得
+- **3つの明確なAPI**: サムネイル、プレビュー、アイコン取得を独立した関数で提供
+- **Windows Shell API統合**: IThumbnailCache、IPreviewHandler、IShellItemImageFactoryを使用
+- **スマートなトリミング**: 元画像のアスペクト比を自動取得して余白を削除
+- **多様なファイル形式対応**: PDF、Office文書、画像、動画など
+- **高速キャッシュ**: Windowsのサムネイルキャッシュシステムを活用
 - **画像形式対応**: PNG、JPG、BMP形式での保存
 - **C++ API**: シンプルで使いやすいC++インターフェース
-- **コマンドラインツール**: 単体テスト用のコマンドラインアプリケーション
+- **コマンドラインツール**: モード切り替え可能なテストアプリケーション
 
 ## 📋 必要環境
 
@@ -87,16 +88,24 @@ start build/WinShellPreview.sln
 
 ```bash
 # 基本的な使用方法
-TestApp.exe <input_file> <output_image> [size]
+TestApp.exe <モード> <input_file> <output_image> [size]
 
-# 例：PDFファイルのサムネイル生成
-TestApp.exe "C:\Documents\sample.pdf" "C:\Output\preview.png" 256
+# モード:
+#   -t, --thumbnail : サムネイル取得（キャッシュ使用、余白トリミング）
+#   -p, --preview   : プレビュー取得（実際の内容表示）
+#   -i, --icon      : アイコン取得（エクスプローラー風）
 
-# 例：Office文書のサムネイル生成
-TestApp.exe "C:\Documents\report.docx" "preview.jpg" 128
+# 例：画像のサムネイル生成（余白自動削除）
+TestApp.exe -t "C:\Pictures\photo.jpg" "thumbnail.png" 256
 
-# 例：動画ファイルのサムネイル生成
-TestApp.exe "C:\Videos\movie.mp4" "thumbnail.png" 512
+# 例：Office文書のプレビュー生成
+TestApp.exe -p "C:\Documents\report.docx" "preview.png" 800
+
+# 例：ファイルのアイコン取得
+TestApp.exe -i "C:\Documents\sample.pdf" "icon.png" 128
+
+# モード省略時はサムネイル取得
+TestApp.exe "C:\test.jpg" "output.png" 256
 ```
 
 ### DLL APIの使用
@@ -146,64 +155,185 @@ int main()
 }
 ```
 
-#### 3. カスタムサイズでのプレビュー生成
+#### 3. 3つの関数の使用例
 
 ```cpp
-// カスタムサイズでプレビューを生成
-HBITMAP hBitmap = nullptr;
-HRESULT hr = GetFilePreview(L"C:\\document.docx", 400, 300, &hBitmap);
+// サムネイル取得（高速、余白なし）
+HBITMAP hThumb = nullptr;
+GetFileThumbnail(L"C:\\photo.jpg", 256, &hThumb);
+SaveBitmapToFile(hThumb, L"C:\\thumb.png");
+ReleasePreviewBitmap(hThumb);
 
-if (SUCCEEDED(hr) && hBitmap) {
-    // JPEG形式で保存
-    SaveBitmapToFile(hBitmap, L"C:\\preview.jpg");
-    ReleasePreviewBitmap(hBitmap);
+// プレビュー取得（実際の内容）
+HBITMAP hPreview = nullptr;
+GetFilePreview(L"C:\\document.docx", 800, 600, &hPreview);
+SaveBitmapToFile(hPreview, L"C:\\preview.png");
+ReleasePreviewBitmap(hPreview);
+
+// アイコン取得（エクスプローラー風）
+HBITMAP hIcon = nullptr;
+GetFileIcon(L"C:\\file.txt", 128, &hIcon);
+SaveBitmapToFile(hIcon, L"C:\\icon.png");
+ReleasePreviewBitmap(hIcon);
+```
+
+#### 4. Electron + Koffi での使用例
+
+```javascript
+const koffi = require('koffi');
+const path = require('path');
+
+// DLLをロード
+const dllPath = path.join(__dirname, 'WinShellPreview.dll');
+const lib = koffi.load(dllPath);
+
+// 関数を定義
+const GetFileThumbnail = lib.func('int GetFileThumbnail(_Str16 filePath, uint size, _Out void** phBitmap)');
+const GetFilePreview = lib.func('int GetFilePreview(_Str16 filePath, uint width, uint height, _Out void** phBitmap)');
+const GetFileIcon = lib.func('int GetFileIcon(_Str16 filePath, uint size, _Out void** phBitmap)');
+const SaveBitmapToFile = lib.func('int SaveBitmapToFile(void* hBitmap, _Str16 outputPath)');
+const ReleasePreviewBitmap = lib.func('void ReleasePreviewBitmap(void* hBitmap)');
+
+// ラッパー関数
+async function getThumbnail(inputPath, outputPath, size = 256) {
+    const hBitmap = [null];
+    const hr = GetFileThumbnail(inputPath, size, hBitmap);
+    
+    if (hr !== 0) throw new Error(`Failed: 0x${hr.toString(16)}`);
+    
+    try {
+        SaveBitmapToFile(hBitmap[0], outputPath);
+    } finally {
+        ReleasePreviewBitmap(hBitmap[0]);
+    }
 }
+
+// 使用例
+await getThumbnail('C:\\photo.jpg', 'C:\\thumb.png', 256);
 ```
 
 ## 📚 API リファレンス
 
 ### エクスポート関数
 
-#### `GetFileThumbnail`
+#### `GetFileThumbnail` - サムネイル取得
+
 ```cpp
 HRESULT GetFileThumbnail(LPCWSTR filePath, UINT size, HBITMAP* phBitmap);
 ```
-- **説明**: 指定されたファイルの正方形サムネイルを取得
-- **パラメータ**:
-  - `filePath`: ファイルパス（Unicode文字列）
-  - `size`: サムネイルサイズ（ピクセル、正方形）
-  - `phBitmap`: 出力されるHBITMAPハンドル
-- **戻り値**: HRESULT（S_OKで成功）
 
-#### `GetFilePreview`
+**説明**: ファイルのサムネイル画像を取得します。Windowsのサムネイルキャッシュを使用するため高速です。
+
+**パラメータ**:
+- `filePath`: ファイルパス（Unicode文字列）
+- `size`: サムネイルの最大サイズ（ピクセル）
+- `phBitmap`: 出力されるHBITMAPハンドル
+
+**戻り値**: `S_OK (0)` で成功、その他はエラーコード
+
+**動作**:
+1. `IThumbnailCache`でキャッシュ確認（`WTS_INCACHEONLY`）
+2. キャッシュになければ`WTS_EXTRACT`で生成
+3. 失敗時は`IShellItemImageFactory`で取得
+4. 元画像のアスペクト比を自動取得して余白をトリミング
+
+**出力サイズ**: 元画像のアスペクト比を維持（例: 縦長画像 → 146x256）
+
+**対応ファイル**: 画像、動画、Office文書、PDF等
+
+---
+
+#### `GetFilePreview` - プレビュー取得
+
 ```cpp
 HRESULT GetFilePreview(LPCWSTR filePath, UINT width, UINT height, HBITMAP* phBitmap);
 ```
-- **説明**: 指定されたサイズでファイルのプレビューを取得
-- **パラメータ**:
-  - `filePath`: ファイルパス（Unicode文字列）
-  - `width`: 幅（ピクセル）
-  - `height`: 高さ（ピクセル）
-  - `phBitmap`: 出力されるHBITMAPハンドル
-- **戻り値**: HRESULT（S_OKで成功）
 
-#### `SaveBitmapToFile`
+**説明**: ファイルの実際の内容をプレビュー画像として取得します。
+
+**パラメータ**:
+- `filePath`: ファイルパス（Unicode文字列）
+- `width`: プレビューの幅（ピクセル）
+- `height`: プレビューの高さ（ピクセル）
+- `phBitmap`: 出力されるHBITMAPハンドル
+
+**戻り値**: `S_OK (0)` で成功、その他はエラーコード
+
+**動作**:
+- `IPreviewHandler`を使用してファイルの実際の内容を描画
+- フォールバックなし（プレビューハンドラーがない場合はエラー）
+
+**対応ファイル**: Office文書、PDF、テキストファイル等（対応アプリのインストールが必要）
+
+**注意**: サムネイルより時間がかかります（毎回レンダリングが必要）
+
+---
+
+#### `GetFileIcon` - アイコン取得（エクスプローラー風）
+
+```cpp
+HRESULT GetFileIcon(LPCWSTR filePath, UINT size, HBITMAP* phBitmap);
+```
+
+**説明**: Windowsエクスプローラーと同じロジックでアイコンまたはサムネイルを取得します。
+
+**パラメータ**:
+- `filePath`: ファイルパス（Unicode文字列）
+- `size`: アイコンサイズ（ピクセル、正方形）
+- `phBitmap`: 出力されるHBITMAPハンドル
+
+**戻り値**: `S_OK (0)` で成功、その他はエラーコード
+
+**動作**:
+1. `IShellItemImageFactory::GetImage`で`SIIGBF_THUMBNAILONLY`を試行（画像ならサムネイル）
+2. 失敗したら`SIIGBF_ICONONLY`でファイルタイプのアイコンを取得
+
+**対応ファイル**: すべてのファイル
+
+---
+
+#### `SaveBitmapToFile` - ビットマップ保存
+
 ```cpp
 HRESULT SaveBitmapToFile(HBITMAP hBitmap, LPCWSTR outputPath);
 ```
-- **説明**: HBITMAPを画像ファイルとして保存
-- **パラメータ**:
-  - `hBitmap`: 保存するビットマップハンドル
-  - `outputPath`: 出力ファイルパス（.png、.jpg、.bmp対応）
-- **戻り値**: HRESULT（S_OKで成功）
 
-#### `ReleasePreviewBitmap`
+**説明**: HBITMAPを画像ファイルとして保存します。
+
+**パラメータ**:
+- `hBitmap`: 保存するビットマップハンドル
+- `outputPath`: 出力ファイルパス（拡張子: `.png`, `.jpg`, `.bmp`）
+
+**戻り値**: `S_OK (0)` で成功、その他はエラーコード
+
+**形式**: PNG（`.png`）、BMP（その他）
+
+---
+
+#### `ReleasePreviewBitmap` - メモリ解放
 ```cpp
 void ReleasePreviewBitmap(HBITMAP hBitmap);
 ```
 - **説明**: ビットマップリソースを解放
 - **パラメータ**:
   - `hBitmap`: 解放するビットマップハンドル
+
+---
+
+### 3つの関数の使い分け
+
+| 関数 | 用途 | 速度 | 品質 | フォールバック |
+|------|------|------|------|---------------|
+| **GetFileThumbnail** | 画像・動画のサムネイル | ⚡ 高速（キャッシュ） | ⭐ 高品質、余白なし | あり |
+| **GetFilePreview** | 文書の内容プレビュー | 🐢 遅い | ⭐⭐⭐ 実際の内容 | なし |
+| **GetFileIcon** | エクスプローラー風表示 | ⚡ 高速 | ⭐⭐ 画像ならサムネイル | あり |
+
+**推奨用途**:
+- **画像ファイル**: `GetFileThumbnail` - 高速で余白なし
+- **Office文書**: `GetFilePreview` - 実際の内容を表示
+- **汎用的な表示**: `GetFileIcon` - 何でも対応
+
+---
 
 ## 🎯 対応ファイル形式
 
